@@ -1,0 +1,359 @@
+/*
+ * 3D Mandelbrot, Logistic Map & Cobweb Visualizer
+ * With Feigenbaum Constant (δ) Convergence Tracking
+ * Built for APDE / Processing for Android (P3D)
+ */
+
+float scaleFac;
+PImage mandelMap;
+ArrayList<PVector> bifPoints = new ArrayList<PVector>();
+
+// Camera controls
+float rotX = PI / 5;
+float rotY = -PI / 6;
+float camDist = -800;
+float centerX;
+boolean isZooming = false;
+
+float animTime = 0;
+
+// Feigenbaum Calculation Arrays
+double[] r_bif = {
+    3.0,               // Period 1 -> 2
+    3.449489742783178, // Period 2 -> 4
+    3.544090359551922, // Period 4 -> 8
+    3.564407266095433, // Period 8 -> 16
+    3.568759419540502, // Period 16 -> 32
+    3.569691609798523, // Period 32 -> 64
+    3.569891258814757, // Period 64 -> 128
+    3.569934018260421  // Period 128 -> 256
+};
+double[] deltas;
+
+void setup() {
+    fullScreen(P3D);
+    orientation(LANDSCAPE);
+    
+    // Scale factor to map mathematical coordinates (-2.0 to 1.0) to screen pixels
+    scaleFac = width / 4.0;
+    centerX = -0.8 * scaleFac;
+    
+    // Precompute the Feigenbaum Constant ratios (δ) based on bifurcation intervals
+    deltas = new double[r_bif.length - 2];
+    for (int i = 0; i < deltas.length; i++) {
+        // δ_n = (r_n - r_{n-1}) / (r_{n+1} - r_n)
+        deltas[i] = (r_bif[i+1] - r_bif[i]) / (r_bif[i+2] - r_bif[i+1]);
+    }
+    
+    // Precompute the heavy fractals once for mobile performance
+    createMandelbrot();
+    createBifurcation();
+}
+
+void draw() {
+    background(10, 15, 25);
+    
+    // Animate the parameter C oscillating between -2.0 and 0.25
+    // Slowed down slightly so you can observe the Feigenbaum convergence
+    animTime += 0.002; 
+    float currentC = map(cos(animTime), 1, -1, -2.0, 0.25);
+    float currentR = 1 + sqrt(max(0, 1 - 4 * currentC)); // Map C to Logistic r
+    
+    // --- 3D World Transform ---
+    pushMatrix();
+    translate(width/2 - width/8, height/2 + height/8, camDist);
+    rotateX(rotX);
+    rotateY(rotY);
+    scale(1, -1, 1); // Flip Y so positive math coordinates go UP
+    translate(-centerX, 0, 0); // Center the physical model
+    
+    drawAxes();
+    drawMandelbrotFloor();
+    drawBifurcationTree();
+    drawCobwebSlice(currentC);
+    
+    popMatrix();
+    
+    // --- 2D Heads Up Display & Feigenbaum Panel ---
+    drawHUD(currentC, currentR);
+}
+
+// ----------------------------------------------------
+// GENERATION FUNCTIONS
+// ----------------------------------------------------
+
+void createMandelbrot() {
+    int w = 512, h = 512;
+    mandelMap = createImage(w, h, RGB);
+    mandelMap.loadPixels();
+    
+    for (int px = 0; px < w; px++) {
+        for (int pz = 0; pz < h; pz++) {
+            float cx = map(px, 0, w, -2.2, 0.8);
+            float cz = map(pz, 0, h, -1.5, 1.5);
+            float zx = 0, zz = 0;
+            int iter = 0;
+            int maxIter = 100;
+            
+            while(zx*zx + zz*zz < 4 && iter < maxIter) {
+                float tmp = zx*zx - zz*zz + cx;
+                zz = 2*zx*zz + cz;
+                zx = tmp;
+                iter++;
+            }
+            
+            if (iter == maxIter) {
+                mandelMap.pixels[pz * w + px] = color(0);
+            } else {
+                float n = (float)iter / maxIter;
+                mandelMap.pixels[pz * w + px] = color(255 * sqrt(n), 150 * n, 255 * (1 - n));
+            }
+        }
+    }
+    mandelMap.updatePixels();
+}
+
+void createBifurcation() {
+    for (float c = -2.0; c <= 0.25; c += 0.005) {
+        float v = 0;
+        for (int i = 0; i < 200; i++) {
+            v = v * v + c;
+        }
+        for (int i = 0; i < 100; i++) {
+            v = v * v + c;
+            bifPoints.add(new PVector(c, v, v));
+        }
+    }
+}
+
+// ----------------------------------------------------
+// DRAWING FUNCTIONS (3D)
+// ----------------------------------------------------
+
+void drawMandelbrotFloor() {
+    pushMatrix();
+    translate(0, -2.0 * scaleFac, 0); 
+    
+    noStroke();
+    beginShape(QUADS);
+    texture(mandelMap);
+    float mXMin = -2.2 * scaleFac, mXMax = 0.8 * scaleFac;
+    float mZMin = -1.5 * scaleFac, mZMax = 1.5 * scaleFac;
+    
+    vertex(mXMin, 0, mZMin, 0, 0);
+    vertex(mXMax, 0, mZMin, mandelMap.width, 0);
+    vertex(mXMax, 0, mZMax, mandelMap.width, mandelMap.height);
+    vertex(mXMin, 0, mZMax, 0, mandelMap.height);
+    endShape();
+    
+    stroke(255, 255, 255, 150);
+    strokeWeight(2);
+    line(-2.0 * scaleFac, 1, 0, 0.25 * scaleFac, 1, 0); 
+    popMatrix();
+}
+
+void drawBifurcationTree() {
+    strokeWeight(2);
+    stroke(0, 255, 255, 150);
+    beginShape(POINTS);
+    for (PVector p : bifPoints) {
+        vertex(p.x * scaleFac, p.y * scaleFac, p.z * scaleFac);
+    }
+    endShape();
+    
+    stroke(0, 255, 255, 30);
+    beginShape(POINTS);
+    for (PVector p : bifPoints) {
+        vertex(p.x * scaleFac, p.y * scaleFac, 0);
+    }
+    endShape();
+}
+
+void drawCobwebSlice(float currentC) {
+    pushMatrix();
+    translate(currentC * scaleFac, 0, 0); 
+    
+    fill(255, 15);
+    noStroke();
+    beginShape(QUADS);
+    vertex(0, -2.5 * scaleFac, -2.5 * scaleFac);
+    vertex(0, 2.5 * scaleFac, -2.5 * scaleFac);
+    vertex(0, 2.5 * scaleFac, 2.5 * scaleFac);
+    vertex(0, -2.5 * scaleFac, 2.5 * scaleFac);
+    endShape();
+    
+    noFill();
+    stroke(255, 100, 100, 200);
+    strokeWeight(3);
+    beginShape();
+    for (float y = -2.0; y <= 2.0; y += 0.05) {
+        float z = y * y + currentC;
+        if(z >= -2.5 && z <= 2.5) {
+            vertex(0, y * scaleFac, z * scaleFac);
+        }
+    }
+    endShape();
+    
+    stroke(100, 255, 100, 200);
+    strokeWeight(2);
+    line(0, -2.5 * scaleFac, -2.5 * scaleFac, 0, 2.5 * scaleFac, 2.5 * scaleFac);
+    
+    float v = 0;
+    stroke(255, 255, 0);
+    strokeWeight(2);
+    for (int i = 0; i < 50; i++) {
+        float vNext = v * v + currentC;
+        line(0, v * scaleFac, v * scaleFac, 0, v * scaleFac, vNext * scaleFac);
+        line(0, v * scaleFac, vNext * scaleFac, 0, vNext * scaleFac, vNext * scaleFac);
+        v = vNext;
+    }
+    
+    noStroke();
+    fill(255, 0, 0);
+    pushMatrix();
+    translate(0, v * scaleFac, v * scaleFac);
+    sphere(3); 
+    popMatrix();
+    popMatrix();
+}
+
+void drawAxes() {
+    strokeWeight(1);
+    stroke(255, 0, 0, 150); line(-2.5 * scaleFac, 0, 0, 1.0 * scaleFac, 0, 0);
+    stroke(0, 255, 0, 150); line(0, -2.5 * scaleFac, 0, 0, 2.5 * scaleFac, 0);
+    stroke(0, 0, 255, 150); line(0, 0, -2.5 * scaleFac, 0, 0, 2.5 * scaleFac);
+}
+
+// ----------------------------------------------------
+// UI AND INPUT HANDLING
+// ----------------------------------------------------
+
+void drawHUD(float currentC, float currentR) {
+    camera(); 
+    hint(DISABLE_DEPTH_TEST);
+    noLights();
+    
+    // Top Left Info Panel
+    fill(10, 15, 25, 210);
+    noStroke();
+    rect(0, 0, width * 0.6, 160);
+    
+    fill(255);
+    textSize(width / 35.0);
+    textAlign(LEFT, TOP);
+    text("Mandelbrot, Logistic Map & Cobweb 3D", 20, 10);
+    
+    textSize(width / 50.0);
+    text("C (Mandelbrot): " + nf(currentC, 1, 4), 20, 60);
+    text("r (Logistic): " + nf(currentR, 1, 4), 20, 95);
+    
+    fill(200);
+    textSize(width / 60.0);
+    text("Drag to rotate. See how the cobweb sculpts the 3D bifurcation tree!", 20, 130);
+    
+    // Right Side: Feigenbaum Convergence Panel
+    drawFeigenbaumPanel(currentR);
+    
+    // Bottom Left Zoom Buttons
+    float btnSize = width / 14.0;
+    float btnX = 20;
+    float btnY1 = height - btnSize * 2 - 40;
+    float btnY2 = height - btnSize - 20;
+    
+    fill(255, 40);
+    stroke(255, 100);
+    strokeWeight(2);
+    rect(btnX, btnY1, btnSize, btnSize, 15);
+    rect(btnX, btnY2, btnSize, btnSize, 15);
+    
+    fill(255);
+    textAlign(CENTER, CENTER);
+    textSize(btnSize * 0.6);
+    text("+", btnX + btnSize/2, btnY1 + btnSize/2 - 5);
+    text("-", btnX + btnSize/2, btnY2 + btnSize/2 - 5);
+    
+    hint(ENABLE_DEPTH_TEST);
+}
+
+void drawFeigenbaumPanel(float currentR) {
+    float panelW = width * 0.35;
+    float panelX = width - panelW;
+    
+    fill(10, 15, 25, 220);
+    noStroke();
+    rect(panelX, 0, panelW, height);
+    
+    fill(255);
+    textAlign(LEFT, TOP);
+    float margin = 20;
+    float y = margin;
+    
+    textSize(width / 45.0);
+    fill(255, 200, 100);
+    text("Feigenbaum Constant (δ)", panelX + margin, y);
+    y += width / 30.0;
+    
+    textSize(width / 70.0);
+    fill(200);
+    text("The ratio of successive bifurcation intervals.", panelX + margin, y);
+    y += width / 45.0;
+    
+    fill(100, 255, 255);
+    text("δ = (r_n - r_{n-1}) / (r_{n+1} - r_n)", panelX + margin, y);
+    y += width / 20.0;
+    
+    textSize(width / 75.0);
+    for(int i = 0; i < deltas.length; i++) {
+        // Check if the current animation R falls within this bifurcation interval
+        boolean active = (currentR >= r_bif[i+1] && currentR < r_bif[i+2]);
+        
+        if (active) {
+            fill(50, 150, 50, 180);
+            rect(panelX, y - 5, panelW, width/45.0);
+            fill(255);
+        } else {
+            fill(170);
+        }
+        
+        String rText = String.format("r%d = %.4f", i+1, r_bif[i+1]);
+        String deltaText = String.format("δ%d = %.4f", i+1, deltas[i]);
+        
+        text(rText, panelX + margin, y);
+        text("→  " + deltaText, panelX + margin + panelW * 0.4, y);
+        
+        y += width / 45.0;
+    }
+    
+    y += width / 40.0;
+    fill(255, 100, 100);
+    textSize(width / 65.0);
+    text("Universal Limit δ ≈ 4.6692016", panelX + margin, y);
+}
+
+void mousePressed() {
+    float btnSize = width / 14.0;
+    float btnX = 20;
+    float btnY1 = height - btnSize * 2 - 40;
+    float btnY2 = height - btnSize - 20;
+    
+    if (mouseX > btnX && mouseX < btnX + btnSize) {
+        if (mouseY > btnY1 && mouseY < btnY1 + btnSize) {
+            isZooming = true;
+            camDist += 150;
+            return;
+        }
+        if (mouseY > btnY2 && mouseY < btnY2 + btnSize) {
+            isZooming = true;
+            camDist -= 150;
+            return;
+        }
+    }
+    isZooming = false;
+}
+
+void mouseDragged() {
+    if (!isZooming) {
+        rotY += (mouseX - pmouseX) * 0.01;
+        rotX -= (mouseY - pmouseY) * 0.01;
+    }
+}
