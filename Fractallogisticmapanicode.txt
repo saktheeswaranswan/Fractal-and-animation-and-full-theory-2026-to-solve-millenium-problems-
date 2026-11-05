@@ -1,0 +1,785 @@
+/*
+============================================================
+       FEIGENBAUM CONSTANT - LOGISTIC MAP LAB
+       COMPLETE PROCESSING ANDROID MODE / APDE SOURCE
+       WITH SMOOTH POINT-BY-POINT ANIMATION
+============================================================
+
+ MATHEMATICAL MODEL:
+
+       x(n+1) = r*x(n)*(1-x(n))
+
+ FEATURES:
+
+ 1. Adjustable logistic growth parameter r
+ 2. Smooth point-by-point drawing of the cobweb paths
+ 3. Progressive real-time rendering of the Bifurcation fractal
+ 4. Bouncing population tracer on both screens
+ 5. Dynamic distance annotations (d1, d2, d3...) 
+ 6. Auto-looping iterations for continuous animation
+ 7. Touch slider & fractal interaction
+ 8. Android portrait interface
+
+ COMPATIBILITY:
+ Processing Android Mode / APDE
+ P2D renderer
+ No external libraries
+
+============================================================
+*/
+
+// ============================================================
+// 01. PARAMETERS & STATE
+// ============================================================
+
+int screenMode = 0; // 0 = Lab Screen, 1 = Bifurcation Screen
+
+float r = 3.20f;
+float x0 = 0.20f;
+float currentX;
+
+int maxIterations = 150;
+int currentDrawIndex = 0;
+float animProgress = 0.0f; // 0.0 to 1.0 for point-by-point drawing
+float animSpeed = 0.035f;  // Speed of the drawing animation
+
+boolean running = true;
+boolean showCobweb = true;
+
+float sliderX1, sliderX2, sliderY;
+boolean dragging = false;
+
+// Orbit stores the full sequence x0, x1, x2 ... xN
+float[] orbit = new float[1000];
+int orbitCount = 0;
+
+String statusText = "STABLE FIXED POINT";
+
+// Bifurcation bounds & progressive rendering
+float bifRMin = 2.80f;
+float bifRMax = 4.00f;
+PGraphics bifBuffer;
+int bifDrawCol = 0;
+
+// ============================================================
+// 02. FEIGENBAUM REFERENCE VALUES
+// ============================================================
+
+// Superstable period-doubling parameters.
+float[] superR = {
+  2.0000000000f,
+  3.2360679775f,
+  3.4985616993f,
+  3.5546408628f,
+  3.5666673799f,
+  3.5692435316f,
+  3.5697952937f,
+  3.5699134654f,
+  3.5699387742f,
+  3.5699441946f
+};
+
+// Eight successive delta ratios & distances
+float[] deltaValues = new float[8];
+float[] distances = new float[9]; 
+
+// ============================================================
+// 03. COLORS
+// ============================================================
+
+int bgColor, panelColor, cyanColor, greenColor, orangeColor, whiteColor, redColor, gridColor;
+
+// ============================================================
+// 04. SETUP
+// ============================================================
+
+void setup() {
+  fullScreen(P2D);
+  orientation(PORTRAIT);
+
+  bgColor = color(8, 12, 24);
+  panelColor = color(19, 27, 45);
+  cyanColor = color(0, 220, 255);
+  greenColor = color(60, 255, 150);
+  orangeColor = color(255, 165, 50);
+  whiteColor = color(240);
+  redColor = color(255, 75, 100);
+  gridColor = color(42, 60, 85);
+
+  textFont(createFont("SansSerif", 14));
+
+  calculateDelta();
+  calculateOrbit();
+}
+
+// ============================================================
+// 05. MAIN DRAW ROUTING (GLOBAL ITERATION)
+// ============================================================
+
+void draw() {
+  // PROGRESSIVE FRACTAL GENERATION (Avoids lag spikes)
+  updateBifurcationRender();
+
+  background(bgColor);
+  drawHeader();
+
+  // GLOBAL ITERATION: Smoothly interpolates the math
+  if (running) {
+    animProgress += animSpeed;
+    if (animProgress >= 1.0f) {
+      animProgress = 0.0f;
+      currentDrawIndex++;
+      if (currentDrawIndex >= maxIterations) {
+         currentDrawIndex = 0; // Auto-loop when finished
+      }
+    }
+  }
+
+  // Update currentX for UI text display
+  float px = orbit[currentDrawIndex];
+  float nx = orbit[currentDrawIndex+1];
+  currentX = lerp(px, nx, animProgress);
+
+  if (screenMode == 0) {
+    drawLabScreen();
+  } else {
+    drawBifurcationScreen();
+  }
+}
+
+// ============================================================
+// 06. LAB SCREEN (SCREEN 0)
+// ============================================================
+
+void drawLabScreen() {
+  float top = height * 0.12f;
+  float panelW = width - 24;
+  float graphH = height * 0.39f;
+
+  drawParameterPanel(12, top, panelW, height * 0.105f);
+  drawCobwebPanel(12, top + height * 0.12f, panelW, graphH);
+  drawMeasurementPanel(12, top + height * 0.12f + graphH + 10, panelW, height * 0.22f);
+  drawControlsScreen1();
+}
+
+// ============================================================
+// 07. BIFURCATION SCREEN (SCREEN 1)
+// ============================================================
+
+void drawBifurcationScreen() {
+  float top = height * 0.12f;
+  float panelW = width - 24;
+  float pHeight = height * 0.75f;
+
+  noStroke();
+  fill(panelColor);
+  rect(12, top, panelW, pHeight, 12);
+
+  fill(whiteColor);
+  textAlign(LEFT);
+  textSize(14);
+  text("01  BIFURCATION DIAGRAM & DYNAMICS", 24, top + 22);
+
+  float gx = 12 + 35;
+  float gy = top + 38;
+  float gw = panelW - 50;
+  float gh = pHeight - 68;
+
+  if (bifBuffer != null) {
+    image(bifBuffer, gx, gy);
+  }
+
+  // Show rendering progress if not finished
+  if (bifBuffer != null && bifDrawCol < bifBuffer.width) {
+    fill(cyanColor);
+    textAlign(RIGHT, TOP);
+    textSize(10);
+    int percent = (int)(((float)bifDrawCol / bifBuffer.width) * 100);
+    text("RENDERING FRACTAL... " + percent + "%", gx + gw, gy + 10);
+  }
+
+  stroke(gridColor);
+  strokeWeight(1);
+  noFill();
+  rect(gx, gy, gw, gh);
+
+  fill(160);
+  textSize(10);
+  textAlign(CENTER, TOP);
+  text("r=2.8", gx, gy + gh + 5);
+  text("3.5", gx + map(3.5f, bifRMin, bifRMax, 0, gw), gy + gh + 5);
+  text("r=4.0", gx + gw, gy + gh + 5);
+
+  textAlign(RIGHT, CENTER);
+  text("1.0", gx - 5, gy);
+  text("0.5", gx - 5, gy + gh / 2);
+  text("0.0", gx - 5, gy + gh);
+
+  // ============================================================
+  // DYNAMIC ANNOTATIONS: SHOWING DISTANCES d1, d2, d3...
+  // ============================================================
+  
+  float pulse = (sin(frameCount * 0.05f) + 1.0f) / 2.0f; // 0.0 to 1.0
+  int alphaPulse = (int)(100 + 155 * pulse);
+
+  for (int i = 1; i <= 4; i++) {
+    float rStart = superR[i];
+    float rEnd = superR[i+1];
+    
+    if (rStart >= bifRMin && rEnd <= bifRMax) {
+      float px1 = gx + map(rStart, bifRMin, bifRMax, 0, gw);
+      float px2 = gx + map(rEnd, bifRMin, bifRMax, 0, gw);
+      
+      stroke(orangeColor, 120);
+      strokeWeight(1);
+      line(px1, gy, px1, gy + gh);
+      line(px2, gy, px2, gy + gh);
+      
+      float yLevel = gy + gh - 40 - (i * 25);
+      
+      stroke(orangeColor, alphaPulse);
+      strokeWeight(2.5f);
+      line(px1, yLevel, px2, yLevel); 
+      line(px1, yLevel - 6, px1, yLevel + 6);
+      line(px2, yLevel - 6, px2, yLevel + 6);
+      
+      noStroke();
+      fill(orangeColor, alphaPulse);
+      textAlign(CENTER, BOTTOM);
+      textSize(12);
+      text("d" + i, (px1 + px2) / 2.0f, yLevel - 4);
+    }
+  }
+
+  float rInf = 3.5699f;
+  float pxInf = gx + map(rInf, bifRMin, bifRMax, 0, gw);
+  stroke(greenColor, alphaPulse);
+  strokeWeight(1.5f);
+  line(pxInf, gy, pxInf, gy + gh);
+  fill(greenColor, alphaPulse);
+  textAlign(LEFT, BOTTOM);
+  text("CHAOS ONSET (r\u221E)", pxInf + 4, gy + 20);
+
+  // ============================================================
+  // POINT-BY-POINT ANIMATION ON BIFURCATION DIAGRAM
+  // ============================================================
+  
+  if (r >= bifRMin && r <= bifRMax) {
+    float indicatorX = gx + map(r, bifRMin, bifRMax, 0, gw);
+    
+    // Scanner Line
+    stroke(redColor, 150);
+    strokeWeight(2);
+    line(indicatorX, gy, indicatorX, gy + gh);
+
+    fill(whiteColor);
+    noStroke();
+    ellipse(indicatorX, gy, 8, 8);
+    ellipse(indicatorX, gy + gh, 8, 8);
+
+    textAlign(CENTER, BOTTOM);
+    fill(redColor);
+    text("r = " + nf(r, 1, 4), indicatorX, gy - 5);
+
+    // Glowing Dot Tracer for point-by-point movement
+    float currentY = gy + gh - currentX * gh;
+    
+    // Orbit History trail (last 10 points)
+    int start = max(0, currentDrawIndex - 10);
+    for (int i = start; i < currentDrawIndex; i++) {
+      float histY = gy + gh - orbit[i] * gh;
+      float histAlpha = map(i, start, currentDrawIndex, 0, 255);
+      fill(orangeColor, histAlpha);
+      noStroke();
+      ellipse(indicatorX, histY, 5, 5);
+    }
+
+    // Active Head Tracker
+    noStroke();
+    fill(cyanColor, 80);
+    ellipse(indicatorX, currentY, 24, 24); // Outer glow
+    fill(cyanColor, 180);
+    ellipse(indicatorX, currentY, 14, 14); // Inner glow
+    fill(whiteColor);
+    ellipse(indicatorX, currentY, 6, 6);   // Bright center
+    
+  } else if (r < bifRMin) {
+    textAlign(LEFT, BOTTOM);
+    fill(redColor);
+    text("\u2190 r = " + nf(r, 1, 4) + " (Off scale)", gx, gy - 5);
+  }
+
+  drawControlsScreen2();
+}
+
+// ============================================================
+// 08. PROGRESSIVE BIFURCATION FRACTAL RENDERING
+// ============================================================
+
+void updateBifurcationRender() {
+  if (bifBuffer == null) {
+    float panelW = width - 24;
+    float pHeight = height * 0.75f;
+    float gw = panelW - 50;
+    float gh = pHeight - 68;
+    bifBuffer = createGraphics((int)gw, (int)gh, P2D);
+    bifBuffer.beginDraw();
+    bifBuffer.background(12, 19, 34); 
+    bifBuffer.endDraw();
+  }
+  
+  // Render slowly column by column so app doesn't freeze
+  if (bifDrawCol < bifBuffer.width) {
+    bifBuffer.beginDraw();
+    bifBuffer.stroke(0, 220, 255, 45); 
+    bifBuffer.strokeWeight(2);
+    
+    int speed = 15; // Render 15 columns per frame
+    for (int k = 0; k < speed && bifDrawCol < bifBuffer.width; k++) {
+      float tr = map(bifDrawCol, 0, bifBuffer.width, bifRMin, bifRMax);
+      float tx = 0.5f;
+      
+      // Let transients settle
+      for (int j = 0; j < 250; j++) {
+        tx = tr * tx * (1 - tx);
+      }
+      // Draw settled attractors
+      for (int j = 0; j < 150; j++) {
+        tx = tr * tx * (1 - tx);
+        float py = map(tx, 0, 1, bifBuffer.height, 0);
+        bifBuffer.point(bifDrawCol, py);
+      }
+      bifDrawCol++;
+    }
+    bifBuffer.endDraw();
+  }
+}
+
+// ============================================================
+// 09. HEADER
+// ============================================================
+
+void drawHeader() {
+  fill(cyanColor);
+  textAlign(CENTER);
+  textSize(21);
+  text("FEIGENBAUM CONSTANT LAB", width/2, 32);
+
+  fill(whiteColor);
+  textSize(11);
+  text(screenMode == 0 ? "LOGISTIC MAP | COBWEB | PERIOD DOUBLING" : "EXPLORE THE ROUTE TO CHAOS", width/2, 52);
+}
+
+// ============================================================
+// 10. PARAMETER PANEL (SCREEN 0)
+// ============================================================
+
+void drawParameterPanel(float x, float y, float w, float h) {
+  noStroke();
+  fill(panelColor);
+  rect(x, y, w, h, 12);
+
+  fill(whiteColor);
+  textAlign(LEFT);
+  textSize(14);
+  text("GROWTH PARAMETER r", x+12, y+22);
+
+  fill(cyanColor);
+  textSize(21);
+  text(nf(r, 1, 6), x+w-105, y+25);
+
+  sliderX1 = x+15;
+  sliderX2 = x+w-15;
+  sliderY = y+h-22;
+
+  stroke(100);
+  strokeWeight(5);
+  line(sliderX1, sliderY, sliderX2, sliderY);
+
+  float px = map(r, 0, 4, sliderX1, sliderX2);
+
+  stroke(cyanColor);
+  strokeWeight(5);
+  line(sliderX1, sliderY, px, sliderY);
+
+  noStroke();
+  fill(whiteColor);
+  ellipse(px, sliderY, 17, 17);
+
+  fill(180);
+  textSize(10);
+  text("0", sliderX1, sliderY-10);
+  text("4", sliderX2-5, sliderY-10);
+}
+
+// ============================================================
+// 11. COBWEB PANEL WITH TRACER (SCREEN 0)
+// ============================================================
+
+void drawCobwebPanel(float x, float y, float w, float h) {
+  noStroke();
+  fill(panelColor);
+  rect(x, y, w, h, 12);
+
+  fill(whiteColor);
+  textAlign(LEFT);
+  textSize(14);
+  text("01  LOGISTIC COBWEB DIAGRAM", x+12, y+22);
+
+  float gx = x+35;
+  float gy = y+38;
+  float gw = w-50;
+  float gh = h-68;
+
+  noStroke();
+  fill(color(12, 19, 34));
+  rect(gx, gy, gw, gh);
+
+  stroke(gridColor);
+  strokeWeight(1);
+  for (int i=0; i<=10; i++) {
+    float xx = gx + gw*i/10.0f;
+    float yy = gy + gh*i/10.0f;
+    line(xx, gy, xx, gy+gh);
+    line(gx, yy, gx+gw, yy);
+  }
+
+  fill(160);
+  textSize(10);
+  textAlign(CENTER);
+  text("x(n)", gx+gw/2, gy+gh+22);
+  textAlign(LEFT);
+  text("x(n+1)", gx-5, gy-7);
+
+  noFill();
+  stroke(cyanColor);
+  strokeWeight(2.5f);
+  beginShape();
+  for (int i=0; i<=250; i++) {
+    float a = i/250.0f;
+    float b = r*a*(1-a);
+    vertex(gx+a*gw, gy+gh-b*gh);
+  }
+  endShape();
+
+  stroke(greenColor);
+  strokeWeight(1.5f);
+  line(gx, gy+gh, gx+gw, gy);
+
+  // ============================================================
+  // DRAW POINT-BY-POINT ANIMATED COBWEB
+  // ============================================================
+  if (showCobweb) {
+    // 1. Draw all fully completed iteration paths (dimmed)
+    for (int i = 0; i < currentDrawIndex; i++) {
+      float ppx = orbit[i];
+      float nnx = orbit[i+1];
+      float sx = gx + ppx * gw;
+      float sy = gy + gh - ppx * gh;
+      float ny = gy + gh - nnx * gh;
+      float nx_screen = gx + nnx * gw;
+
+      stroke(orangeColor, 100);
+      strokeWeight(1.5f);
+      line(sx, sy, sx, ny);
+      line(sx, ny, nx_screen, ny);
+
+      noStroke();
+      fill(redColor, 100);
+      ellipse(nx_screen, ny, 4, 4);
+    }
+    
+    // 2. Draw the currently animating path (bright & glowing)
+    if (currentDrawIndex < maxIterations) {
+      float ppx = orbit[currentDrawIndex];
+      float nnx = orbit[currentDrawIndex+1];
+      float sx = gx + ppx * gw;
+      float sy = gy + gh - ppx * gh;
+      float ny = gy + gh - nnx * gh;
+      float nx_screen = gx + nnx * gw;
+
+      float drawHeadX = sx;
+      float drawHeadY = sy;
+
+      stroke(orangeColor, 255); 
+      strokeWeight(2.0f);
+
+      // Half 1: Vertical line climbing to the parabola curve
+      if (animProgress < 0.5f) {
+         float t = animProgress * 2.0f;
+         drawHeadY = lerp(sy, ny, t);
+         line(sx, sy, drawHeadX, drawHeadY);
+      } 
+      // Half 2: Horizontal line moving to the y=x diagonal
+      else {
+         line(sx, sy, sx, ny); // Complete vertical
+         float t = (animProgress - 0.5f) * 2.0f;
+         drawHeadX = lerp(sx, nx_screen, t);
+         drawHeadY = ny;
+         line(sx, ny, drawHeadX, drawHeadY);
+      }
+      
+      // Active Head Glow
+      noStroke();
+      fill(cyanColor, 80);
+      ellipse(drawHeadX, drawHeadY, 24, 24); // Outer glow
+      fill(cyanColor, 180);
+      ellipse(drawHeadX, drawHeadY, 14, 14); // Inner glow
+      fill(whiteColor);
+      ellipse(drawHeadX, drawHeadY, 6, 6);   // Bright center
+    }
+  }
+
+  fill(greenColor);
+  textAlign(RIGHT);
+  textSize(10);
+  text("y = x", gx+gw-5, gy+15);
+  fill(cyanColor);
+  text("f(x) = rx(1-x)", gx+gw-5, gy+30);
+
+  fill(whiteColor);
+  textAlign(LEFT);
+  textSize(11);
+  text("x = " + nf(currentX, 1, 6) + "   ITERATIONS = " + currentDrawIndex, gx, y+h-8);
+}
+
+// ============================================================
+// 12. MEASUREMENT PANEL (SCREEN 0)
+// ============================================================
+
+void drawMeasurementPanel(float x, float y, float w, float h) {
+  noStroke();
+  fill(panelColor);
+  rect(x, y, w, h, 12);
+
+  fill(whiteColor);
+  textAlign(LEFT);
+  textSize(14);
+  text("02  FEIGENBAUM MEASUREMENTS", x+12, y+22);
+
+  fill(orangeColor);
+  textSize(10);
+  text("SUPERSTABLE PERIOD-DOUBLING RATIOS", x+12, y+42);
+
+  float rowY = y+59;
+  float rowH = 14;
+
+  textSize(10);
+  fill(160);
+  text("PERIOD", x+12, rowY);
+  text("r(n)", x+w*0.28f, rowY);
+  text("DELTA", x+w*0.69f, rowY);
+
+  for (int i=0; i<8; i++) {
+    float yy = rowY+rowH*(i+1);
+    fill(whiteColor);
+    text(str((int)pow(2,i)), x+12, yy);
+    text(nf(superR[i], 1, 7), x+w*0.28f, yy);
+    
+    fill(cyanColor);
+    text(nf(deltaValues[i], 1, 6), x+w*0.69f, yy);
+  }
+
+  fill(greenColor);
+  textSize(10);
+  text("CURRENT REGIME: " + statusText, x+12, y+h-8);
+}
+
+// ============================================================
+// 13. MATH & LOGIC
+// ============================================================
+
+void calculateDelta() {
+  for (int i = 0; i < 9; i++) {
+    distances[i] = superR[i+1] - superR[i];
+  }
+  for (int i = 0; i < 8; i++) {
+    deltaValues[i] = distances[i] / distances[i+1];
+  }
+}
+
+// Pre-calculates the entire array so the animation can trace it perfectly
+void calculateOrbit() {
+  orbitCount = 0;
+  float tempX = x0;
+  orbit[orbitCount++] = tempX;
+  
+  for (int i = 0; i < maxIterations; i++) {
+    tempX = r * tempX * (1 - tempX);
+    orbit[orbitCount++] = tempX;
+  }
+  
+  currentDrawIndex = 0;
+  animProgress = 0.0f;
+  updateStatus();
+}
+
+void updateStatus() {
+  if (r < 1) statusText = "EXTINCTION";
+  else if (r < 3) statusText = "STABLE FIXED POINT";
+  else if (r < 3.4495f) statusText = "PERIOD DOUBLING";
+  else if (r < 3.5699457f) statusText = "HIGHER PERIODS";
+  else statusText = "CHAOTIC REGION";
+}
+
+void resetSimulation() {
+  calculateOrbit();
+  running = true;
+}
+
+void stepIteration() {
+  currentDrawIndex++;
+  animProgress = 0.0f;
+  if (currentDrawIndex >= maxIterations) {
+    currentDrawIndex = 0;
+  }
+}
+
+// ============================================================
+// 14. BUTTON CONTROLS
+// ============================================================
+
+void drawControlsScreen1() {
+  float row1Y = height - 110;
+  float row2Y = height - 55;
+  float bw = width/3.0f;
+
+  drawButton(8, row1Y, bw-12, 43, running ? "PAUSE" : "PLAY");
+  drawButton(bw+4, row1Y, bw-12, 43, "RESET");
+  drawButton(2*bw+4, row1Y, bw-12, 43, "STEP");
+  
+  drawButton(8, row2Y, width-16, 43, "VIEW BIFURCATION DIAGRAM \u2192");
+}
+
+void drawControlsScreen2() {
+  float row2Y = height - 55;
+  drawButton(8, row2Y, width-16, 43, "\u2190 BACK TO LOGISTIC COBWEB");
+}
+
+void drawButton(float x, float y, float w, float h, String label) {
+  noStroke();
+  fill(color(25, 65, 95));
+  rect(x, y, w, h, 9);
+  fill(whiteColor);
+  textAlign(CENTER, CENTER);
+  textSize(13);
+  text(label, x+w/2, y+h/2);
+}
+
+// ============================================================
+// 15. TOUCH INPUT
+// ============================================================
+
+void mousePressed() {
+  if (screenMode == 0) {
+    handleScreen1Touch();
+  } else {
+    handleScreen2Touch();
+  }
+}
+
+void handleScreen1Touch() {
+  float panelTop = height*0.12f;
+  float panelBottom = panelTop + height*0.105f;
+
+  // LAB SLIDER
+  if (mouseY >= panelTop && mouseY <= panelBottom) {
+    if (mouseX >= 15 && mouseX <= width-15) {
+      dragging = true;
+      changeRFromSlider(mouseX);
+    }
+    return;
+  }
+
+  // BUTTONS
+  float row1Y = height - 110;
+  float row2Y = height - 55;
+  float bw = width/3.0f;
+
+  if (mouseY >= row1Y && mouseY <= row1Y+43) {
+    if (mouseX < bw) {
+      running = !running;
+    } else if (mouseX < 2*bw) {
+      resetSimulation();
+    } else {
+      running = false; 
+      stepIteration();
+    }
+  } else if (mouseY >= row2Y && mouseY <= row2Y+43) {
+    screenMode = 1;
+  }
+}
+
+void handleScreen2Touch() {
+  float top = height * 0.12f;
+  float panelW = width - 24;
+  float pHeight = height * 0.75f;
+  float gx = 12 + 35;
+  float gy = top + 38;
+  float gw = panelW - 50;
+  float gh = pHeight - 68;
+
+  // INTERACTIVE FRACTAL TOUCH
+  if (mouseY >= gy && mouseY <= gy + gh) {
+    if (mouseX >= gx && mouseX <= gx + gw) {
+      dragging = true;
+      changeRFromBifurcation(mouseX, gx, gw);
+    }
+    return;
+  }
+
+  // BUTTONS
+  float row2Y = height - 55;
+  if (mouseY >= row2Y && mouseY <= row2Y+43) {
+    screenMode = 0;
+  }
+}
+
+void mouseDragged() {
+  if (dragging) {
+    if (screenMode == 0) {
+      changeRFromSlider(mouseX);
+    } else {
+      float gx = 12 + 35;
+      float panelW = width - 24;
+      float gw = panelW - 50;
+      changeRFromBifurcation(mouseX, gx, gw);
+    }
+  }
+}
+
+void mouseReleased() {
+  dragging = false;
+}
+
+void changeRFromSlider(float px) {
+  float v = constrain(px, sliderX1, sliderX2);
+  r = map(v, sliderX1, sliderX2, 0, 4);
+  calculateOrbit();
+}
+
+void changeRFromBifurcation(float px, float gx, float gw) {
+  float v = constrain(px, gx, gx + gw);
+  r = map(v, gx, gx + gw, bifRMin, bifRMax);
+  calculateOrbit();
+}
+
+// ============================================================
+// 16. ANDROID BACK BUTTON
+// ============================================================
+
+void keyPressed() {
+  if (key == BACK) {
+    if (screenMode == 1) {
+      key = 0; // consume key
+      screenMode = 0; 
+    } else {
+      running = false;
+      System.exit(0); 
+    }
+  }
+}
+
+// ============================================================
+// END OF COMPLETE FEIGENBAUM LOGISTIC MAP LAB
+// ============================================================
